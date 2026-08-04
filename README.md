@@ -10,7 +10,7 @@ Sensitive applications commonly need more than `UIPasteboard.general.string = va
 
 - wallet addresses and bank identifiers may need controlled cross-app copying;
 - one-time codes should expire quickly and remain on the current device;
-- internal values should stay on an application-only pasteboard;
+- internal values should stay on a nonpersistent app pasteboard;
 - seed phrases, private keys, PINs, and CVVs should never enter a pasteboard;
 - passive pasteboard reads should not happen without user intent;
 - delayed cleanup must not delete content the user copied afterward.
@@ -35,13 +35,13 @@ Then add `ProtectedPasteboard` to your target dependencies.
 
 ## Quick start
 
-Create one instance at your composition root:
+Use the app-wide production facade:
 
 ```swift
 import ProtectedPasteboard
 
 @MainActor
-let pasteboard = ProtectedPasteboard.live()
+let pasteboard = ProtectedPasteboard.shared
 ```
 
 Copy a financial identifier with conservative defaults:
@@ -61,10 +61,10 @@ Copy a one-time code:
 try pasteboard.write("481920", policy: .oneTimeCode)
 ```
 
-Keep data inside the application:
+Use the nonpersistent app pasteboard for in-app workflows:
 
 ```swift
-try pasteboard.write("internal value", policy: .applicationOnly)
+try pasteboard.write("internal value", policy: .appPasteboard)
 ```
 
 Prohibit copying a secret:
@@ -83,11 +83,35 @@ Read only after an explicit user action:
 let value = try pasteboard.readStringAfterUserAction()
 ```
 
+Read one explicitly requested representation instead of decoding everything on
+the pasteboard:
+
+```swift
+let imageData = try pasteboard.readDataAfterUserAction(
+    ofExactType: .png,
+    maximumByteCount: 5 * 1_024 * 1_024
+)
+```
+
+The limit prevents oversized data from propagating through the application,
+although UIKit may materialize provider-backed data before the library can
+measure it.
+
 Inspect types without intentionally decoding the payload:
 
 ```swift
 let snapshot = pasteboard.inspect()
 ```
+
+Check metadata before offering a paste action:
+
+```swift
+if pasteboard.advertisesContent(conformingTo: .url) {
+    // Present a user-initiated Paste URL action.
+}
+```
+
+Advertised metadata does not guarantee that a provider-backed payload will load.
 
 Clear only if the pasteboard still contains your write:
 
@@ -97,12 +121,12 @@ pasteboard.clear(ifCurrent: receipt)
 
 ## Built-in policies
 
-| Policy | Scope | Handoff | Expiration | Intended use |
+| Policy | Scope | Universal Clipboard | Expiration | Intended use |
 | --- | --- | --- | --- | --- |
 | `.standard` | System | Allowed | When replaced | Non-sensitive content |
 | `.sensitive` | System | Disabled | 60 seconds | Wallet addresses, IBANs, transaction IDs |
 | `.oneTimeCode` | System | Disabled | 30 seconds | Short-lived verification codes |
-| `.applicationOnly` | Private | Disabled | When replaced | Copy/paste inside the app |
+| `.appPasteboard` | App pasteboard | N/A | When replaced | Copy/paste inside the app |
 | `.prohibited(reason:)` | None | Disabled | N/A | Seed phrases, private keys, PINs, CVVs |
 
 Every policy is a normal value, so teams can define audited domain-specific presets:
@@ -110,7 +134,7 @@ Every policy is a normal value, so teams can define audited domain-specific pres
 ```swift
 let walletAddressPolicy = try PasteboardPolicy(
     destination: .system(universalClipboard: .disabled),
-    expiration: .after(90),
+    expiration: .after(seconds: 90),
     maximumPayloadSize: 512,
     allowedTypes: .exact([.utf8PlainText])
 )
@@ -122,7 +146,7 @@ let walletAddressPolicy = try PasteboardPolicy(
 - `PasteboardPolicy` contains explicit security decisions.
 - `PasteboardStore` is the dependency-injection boundary.
 - `UIKitPasteboardStore` adapts `UIPasteboard`.
-- `PasteboardItem` preserves multiple UTType representations.
+- `PasteboardItem` preserves multiple UTType representations for writes.
 - `Receipt` enables identity-bound, best-effort conditional cleanup.
 
 All store access is isolated to `MainActor`, matching UIKit usage and preventing unsynchronized shared state in strict Swift concurrency mode.
@@ -130,6 +154,10 @@ All store access is isolated to `MainActor`, matching UIKit usage and preventing
 ## Security boundary
 
 The system pasteboard is a sharing mechanism, not secret storage. Once content is written to the system pasteboard, another app may read it before expiration. `localOnly` prevents Universal Clipboard transfer; it does not make the local pasteboard private.
+
+The app pasteboard is nonpersistent and intended for in-app workflows. It is
+not a cryptographic boundary; apps signed by the same team may share named
+pasteboards when they know the name.
 
 Use Keychain for persistent credentials and cryptographic key material. Prefer disabling pasteboard access entirely for secrets whose disclosure would compromise an account or wallet.
 

@@ -10,7 +10,7 @@ ProtectedPasteboard is intended to reduce accidental exposure caused by unsafe d
 
 - disable Universal Clipboard for selected writes;
 - request operating-system expiration;
-- route internal content to an application-only pasteboard;
+- route internal content to a nonpersistent app pasteboard;
 - reject prohibited content before it reaches a store;
 - limit payload types and sizes;
 - avoid passive payload reads;
@@ -28,7 +28,7 @@ ProtectedPasteboard cannot:
 - prevent runtime instrumentation on a compromised or jailbroken device;
 - validate domain-specific values such as wallet addresses or IBANs unless the application supplies that validation.
 
-The application-only destination uses a unique named pasteboard. It is intended
+The app pasteboard destination uses a unique named pasteboard. It is intended
 for in-app workflows, but it is not a cryptographic isolation boundary. Apps
 signed by the same team may share named pasteboards when they know the name.
 
@@ -43,5 +43,5 @@ change-count check.
 | Public text | `.standard` |
 | Wallet address, IBAN, transaction ID | `.sensitive` plus domain validation |
 | One-time code | `.oneTimeCode` |
-| Internal transient UI value | `.applicationOnly` |
+| Internal transient UI value | `.appPasteboard` |
 | Seed phrase, private key, PIN, CVV | `.prohibited(reason:)` |

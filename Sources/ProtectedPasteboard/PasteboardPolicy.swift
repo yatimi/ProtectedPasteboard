@@ -10,15 +10,15 @@ import UniformTypeIdentifiers
 
 /// A complete, auditable decision for one pasteboard write.
 ///
-/// The enum keeps denied writes separate from allowed configurations and makes
-/// contradictory states, such as Universal Clipboard on an application-only
+/// The enum keeps prohibited writes separate from allowed configurations and
+/// makes contradictory states, such as Universal Clipboard on an app
 /// pasteboard, unrepresentable.
 public enum PasteboardPolicy: Sendable, Equatable {
     /// Apply the validated write configuration.
     case allowed(Configuration)
 
     /// Reject the write before content reaches a pasteboard store.
-    case denied(reason: String)
+    case prohibited(reason: String)
 
     /// A validated configuration for an allowed write.
     public struct Configuration: Sendable, Equatable {
@@ -27,8 +27,12 @@ public enum PasteboardPolicy: Sendable, Equatable {
             /// The system pasteboard, allowing other local apps to paste.
             case system(universalClipboard: UniversalClipboard)
 
-            /// A unique named pasteboard intended for in-app workflows.
-            case applicationOnly
+            /// A nonpersistent app pasteboard intended for in-app workflows.
+            ///
+            /// Apps signed by the same team may share named pasteboards when
+            /// they know the pasteboard name. This is not a confidentiality
+            /// boundary.
+            case appPasteboard
         }
 
         /// Whether Universal Clipboard may transfer system-pasteboard content.
@@ -43,7 +47,7 @@ public enum PasteboardPolicy: Sendable, Equatable {
             case whenReplaced
 
             /// Remove the content after a positive, finite number of seconds.
-            case after(TimeInterval)
+            case after(seconds: TimeInterval)
 
             /// Remove the content at an absolute date.
             case at(Date)
@@ -52,8 +56,8 @@ public enum PasteboardPolicy: Sendable, Equatable {
                 switch self {
                 case .whenReplaced:
                     nil
-                case let .after(interval):
-                    now.addingTimeInterval(interval)
+                case let .after(seconds):
+                    now.addingTimeInterval(seconds)
                 case let .at(date):
                     date
                 }
@@ -96,7 +100,7 @@ public enum PasteboardPolicy: Sendable, Equatable {
                 case .nonPositiveExpiration:
                     "Expiration must be greater than zero seconds."
                 case .nonFiniteExpiration:
-                    "Expiration must be a finite number of seconds."
+                    "Expiration must resolve to a finite date."
                 case .nonPositivePayloadLimit:
                     "Maximum payload size must be greater than zero bytes."
                 case .emptyTypeSet:
@@ -124,12 +128,19 @@ public enum PasteboardPolicy: Sendable, Equatable {
             maximumPayloadSize: Int? = nil,
             allowedTypes: AllowedTypes = .any
         ) throws {
-            if case let .after(interval) = expiration {
-                guard interval.isFinite else {
+            switch expiration {
+            case .whenReplaced:
+                break
+            case let .after(seconds):
+                guard seconds.isFinite else {
                     throw ValidationError.nonFiniteExpiration
                 }
-                guard interval > 0 else {
+                guard seconds > 0 else {
                     throw ValidationError.nonPositiveExpiration
+                }
+            case let .at(date):
+                guard date.timeIntervalSinceReferenceDate.isFinite else {
+                    throw ValidationError.nonFiniteExpiration
                 }
             }
 
@@ -191,7 +202,7 @@ public extension PasteboardPolicy {
     /// Conservative defaults for financial identifiers and sensitive text.
     static let sensitive = Self.allowed(Configuration(
         validatedDestination: .system(universalClipboard: .disabled),
-        expiration: .after(60),
+        expiration: .after(seconds: 60),
         maximumPayloadSize: 64 * 1_024,
         allowedTypes: .exact([.utf8PlainText, .url])
     ))
@@ -199,22 +210,15 @@ public extension PasteboardPolicy {
     /// A short-lived policy suitable for one-time codes.
     static let oneTimeCode = Self.allowed(Configuration(
         validatedDestination: .system(universalClipboard: .disabled),
-        expiration: .after(30),
+        expiration: .after(seconds: 30),
         maximumPayloadSize: 1_024,
         allowedTypes: .exact([.utf8PlainText])
     ))
 
-    /// A unique named pasteboard intended for in-app copy and paste.
-    static let applicationOnly = Self.allowed(Configuration(
-        validatedDestination: .applicationOnly,
+    /// A nonpersistent app pasteboard intended for in-app copy and paste.
+    static let appPasteboard = Self.allowed(Configuration(
+        validatedDestination: .appPasteboard,
         expiration: .whenReplaced,
         maximumPayloadSize: 1_024 * 1_024
     ))
-
-    /// Explicitly prohibits writing the value to any pasteboard.
-    ///
-    /// Use this for seed phrases, private keys, PINs, CVVs, and similar secrets.
-    static func prohibited(reason: String) -> Self {
-        .denied(reason: reason)
-    }
 }

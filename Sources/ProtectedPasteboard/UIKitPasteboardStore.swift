@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
 @MainActor
 public final class UIKitPasteboardStore: PasteboardStore {
     fileprivate static let sharedSystemStore = UIKitPasteboardStore(pasteboard: .general)
-    fileprivate static let sharedApplicationStore = UIKitPasteboardStore(
+    fileprivate static let sharedAppPasteboardStore = UIKitPasteboardStore(
         pasteboard: .withUniqueName()
     )
 
@@ -31,19 +31,24 @@ public final class UIKitPasteboardStore: PasteboardStore {
     }
 
     public func snapshot() -> PasteboardSnapshot {
-        let initialChangeCount = changeCount
-        if let cachedSnapshot, cachedSnapshot.changeCount == initialChangeCount {
+        let observedChangeCount = changeCount
+        if let cachedSnapshot, cachedSnapshot.changeCount == observedChangeCount {
             return cachedSnapshot
         }
 
-        var snapshot = makeSnapshot(changeCount: initialChangeCount)
-        let finalChangeCount = changeCount
-        if finalChangeCount != initialChangeCount {
-            snapshot = makeSnapshot(changeCount: finalChangeCount)
+        for _ in 0..<2 {
+            let initialChangeCount = changeCount
+            let snapshot = makeSnapshot(changeCount: initialChangeCount)
+            guard changeCount == initialChangeCount else {
+                continue
+            }
+
+            cachedSnapshot = snapshot
+            return snapshot
         }
 
-        cachedSnapshot = snapshot
-        return snapshot
+        let fallbackChangeCount = changeCount
+        return makeSnapshot(changeCount: fallbackChangeCount)
     }
 
     @discardableResult
@@ -69,43 +74,23 @@ public final class UIKitPasteboardStore: PasteboardStore {
         return pasteboard.changeCount
     }
 
-    public func readItems() throws -> [PasteboardItem] {
-        let itemCount = pasteboard.numberOfItems
-        guard itemCount > 0 else {
-            return []
-        }
-
-        return try (0..<itemCount).compactMap { itemIndex in
-            let representations = representations(at: itemIndex)
-            guard representations.isEmpty == false else {
-                return nil
-            }
-            return try PasteboardItem(representations: representations)
-        }
-    }
-
     public func readFirstRepresentation(
-        matching requestedType: UTType
+        ofExactType requestedType: UTType
     ) throws -> PasteboardItem.Representation? {
         let itemCount = pasteboard.numberOfItems
         guard itemCount > 0 else {
             return nil
         }
 
-        for itemIndex in 0..<itemCount {
-            for identifier in typeIdentifiers(at: itemIndex) {
-                guard
-                    let type = UTType(identifier),
-                    type == requestedType,
-                    let data = data(forType: identifier, at: itemIndex)
-                else {
-                    continue
-                }
-
-                return PasteboardItem.Representation(type: type, data: data)
-            }
+        let itemSet = IndexSet(integersIn: 0..<itemCount)
+        guard let data = pasteboard.data(
+            forPasteboardType: requestedType.identifier,
+            inItemSet: itemSet
+        )?.first else {
+            return nil
         }
-        return nil
+
+        return PasteboardItem.Representation(type: requestedType, data: data)
     }
 
     @discardableResult
@@ -117,48 +102,23 @@ public final class UIKitPasteboardStore: PasteboardStore {
 
     private func makeSnapshot(changeCount: Int) -> PasteboardSnapshot {
         let itemCount = pasteboard.numberOfItems
-        let items = (0..<itemCount).map { itemIndex in
-            PasteboardSnapshot.Item(
-                typeIdentifiers: typeIdentifiers(at: itemIndex)
-            )
+        guard itemCount > 0 else {
+            return PasteboardSnapshot(changeCount: changeCount, items: [])
         }
+
+        let itemSet = IndexSet(integersIn: 0..<itemCount)
+        let items = pasteboard.types(forItemSet: itemSet)?.map { identifiers in
+            PasteboardSnapshot.Item(typeIdentifiers: identifiers)
+        } ?? []
         return PasteboardSnapshot(changeCount: changeCount, items: items)
-    }
-
-    private func representations(at itemIndex: Int) -> [PasteboardItem.Representation] {
-        typeIdentifiers(at: itemIndex).compactMap { identifier in
-            guard
-                let type = UTType(identifier),
-                let data = data(forType: identifier, at: itemIndex)
-            else {
-                return nil
-            }
-            return PasteboardItem.Representation(type: type, data: data)
-        }
-    }
-
-    private func typeIdentifiers(at itemIndex: Int) -> [String] {
-        pasteboard.types(forItemSet: IndexSet(integer: itemIndex))?.first ?? []
-    }
-
-    private func data(forType identifier: String, at itemIndex: Int) -> Data? {
-        pasteboard.data(
-            forPasteboardType: identifier,
-            inItemSet: IndexSet(integer: itemIndex)
-        )?.first
     }
 }
 
 public extension ProtectedPasteboard {
-    /// Creates a production facade backed by app-wide system and private stores.
-    ///
-    /// Prefer creating this once at the application's composition root and
-    /// injecting it into features that need pasteboard access.
-    static func live() -> ProtectedPasteboard {
-        ProtectedPasteboard(
-            systemStore: UIKitPasteboardStore.sharedSystemStore,
-            applicationStore: UIKitPasteboardStore.sharedApplicationStore
-        )
-    }
+    /// The app-wide production facade backed by system and app pasteboards.
+    static let shared = ProtectedPasteboard(
+        systemStore: UIKitPasteboardStore.sharedSystemStore,
+        appPasteboardStore: UIKitPasteboardStore.sharedAppPasteboardStore
+    )
 }
 #endif

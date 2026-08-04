@@ -10,7 +10,8 @@ teams can review security decisions, inject test stores, and define
 domain-specific presets.
 
 ```swift
-let pasteboard = ProtectedPasteboard.live()
+@MainActor
+let pasteboard = ProtectedPasteboard.shared
 
 try pasteboard.write(
     walletAddress,
@@ -33,8 +34,9 @@ expires.
 
 ### Reading and inspecting
 
-- ``ProtectedPasteboard/readItemsAfterUserAction(from:)``
+- ``ProtectedPasteboard/readDataAfterUserAction(ofExactType:maximumByteCount:from:)``
 - ``ProtectedPasteboard/readStringAfterUserAction(from:)``
+- ``ProtectedPasteboard/advertisesContent(conformingTo:at:)``
 - ``ProtectedPasteboard/inspect(location:)``
 - ``PasteboardSnapshot``
 - ``PasteboardLocation``

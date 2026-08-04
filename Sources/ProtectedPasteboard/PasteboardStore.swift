@@ -13,8 +13,8 @@ public enum PasteboardLocation: Sendable, Equatable {
     /// The systemwide general pasteboard.
     case system
 
-    /// The package's unique application pasteboard.
-    case applicationOnly
+    /// The package's nonpersistent app pasteboard.
+    case appPasteboard
 }
 
 /// Options already resolved for a concrete pasteboard store.
@@ -89,14 +89,11 @@ public protocol PasteboardStore: AnyObject {
         options: PasteboardWriteOptions
     ) throws -> Int
 
-    /// Reads and decodes the current item payloads.
-    func readItems() throws -> [PasteboardItem]
-
-    /// Reads only the first representation matching `type`.
+    /// Reads only the first representation with exactly the requested type.
     ///
     /// Stores should avoid decoding unrelated payloads while serving this request.
     func readFirstRepresentation(
-        matching type: UTType
+        ofExactType type: UTType
     ) throws -> PasteboardItem.Representation?
 
     /// Removes every item and returns the resulting change count.

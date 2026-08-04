@@ -8,7 +8,7 @@
 import Foundation
 import UniformTypeIdentifiers
 
-/// A policy-enforcing facade over system and application-only pasteboards.
+/// A policy-enforcing facade over system and app pasteboards.
 @MainActor
 public final class ProtectedPasteboard {
     /// An opaque handle for conditionally clearing one write.
@@ -40,18 +40,21 @@ public final class ProtectedPasteboard {
 
     /// Errors produced while enforcing a policy or decoding content.
     public enum Error: Swift.Error, Sendable, Equatable, LocalizedError {
-        case writeProhibited(reason: String)
+        case prohibited(reason: String)
         case emptyWrite
+        case invalidMaximumByteCount
         case payloadTooLarge(actual: Int, maximum: Int)
         case disallowedType(String)
         case invalidUTF8
 
         public var errorDescription: String? {
             switch self {
-            case let .writeProhibited(reason):
+            case let .prohibited(reason):
                 "Pasteboard writes are prohibited: \(reason)"
             case .emptyWrite:
                 "At least one pasteboard item is required."
+            case .invalidMaximumByteCount:
+                "Maximum byte count must be greater than zero."
             case let .payloadTooLarge(actual, maximum):
                 "The pasteboard payload is \(actual) bytes; the policy allows \(maximum) bytes."
             case let .disallowedType(identifier):
@@ -64,17 +67,17 @@ public final class ProtectedPasteboard {
 
     private let ownerID = UUID()
     private let systemStore: any PasteboardStore
-    private let applicationStore: any PasteboardStore
+    private let appPasteboardStore: any PasteboardStore
     private let now: () -> Date
 
     /// Creates a facade with explicit, replaceable storage dependencies.
     public init(
         systemStore: any PasteboardStore,
-        applicationStore: any PasteboardStore,
+        appPasteboardStore: any PasteboardStore,
         now: @escaping () -> Date = Date.init
     ) {
         self.systemStore = systemStore
-        self.applicationStore = applicationStore
+        self.appPasteboardStore = appPasteboardStore
         self.now = now
     }
 
@@ -97,8 +100,8 @@ public final class ProtectedPasteboard {
         switch policy {
         case let .allowed(value):
             configuration = value
-        case let .denied(reason):
-                throw Error.writeProhibited(reason: reason)
+        case let .prohibited(reason):
+            throw Error.prohibited(reason: reason)
         }
 
         try validate(items, configuration: configuration)
@@ -139,31 +142,70 @@ public final class ProtectedPasteboard {
         store(at: location).snapshot()
     }
 
-    /// Reads supported payloads after an explicit user action.
+    /// Reads the first representation with exactly the requested type.
     ///
     /// The method name is an API-level reminder, not proof of user intent. Call
     /// it only from a system paste action, `UIPasteControl`, or an equivalent
-    /// interaction initiated by the user.
-    public func readItemsAfterUserAction(
+    /// interaction initiated by the user. UIKit may materialize provider-backed
+    /// data before the size limit can be enforced.
+    public func readDataAfterUserAction(
+        ofExactType type: UTType,
+        maximumByteCount: Int,
         from location: PasteboardLocation = .system
-    ) throws -> [PasteboardItem] {
-        try store(at: location).readItems()
-    }
+    ) throws -> Data? {
+        guard maximumByteCount > 0 else {
+            throw Error.invalidMaximumByteCount
+        }
 
-    /// Reads the first exact UTF-8 plain-text representation after a user action.
-    public func readStringAfterUserAction(
-        from location: PasteboardLocation = .system
-    ) throws -> String? {
-        guard let representation = try store(at: location)
-            .readFirstRepresentation(matching: .utf8PlainText)
+        guard let data = try store(at: location)
+            .readFirstRepresentation(ofExactType: type)?
+            .data
         else {
             return nil
         }
 
-        guard let value = String(data: representation.data, encoding: .utf8) else {
+        guard data.count <= maximumByteCount else {
+            throw Error.payloadTooLarge(
+                actual: data.count,
+                maximum: maximumByteCount
+            )
+        }
+        return data
+    }
+
+    /// Reads the first exact UTF-8 plain-text representation after a user action.
+    public func readStringAfterUserAction(
+        from location: PasteboardLocation = .system,
+        maximumByteCount: Int = 64 * 1_024
+    ) throws -> String? {
+        guard let data = try readDataAfterUserAction(
+            ofExactType: .utf8PlainText,
+            maximumByteCount: maximumByteCount,
+            from: location
+        )
+        else {
+            return nil
+        }
+
+        guard let value = String(data: data, encoding: .utf8) else {
             throw Error.invalidUTF8
         }
         return value
+    }
+
+    /// Returns whether metadata advertises a representation conforming to `type`.
+    ///
+    /// This method does not intentionally decode pasteboard payloads. An
+    /// advertised representation may still fail to load when the user pastes.
+    public func advertisesContent(
+        conformingTo type: UTType,
+        at location: PasteboardLocation = .system
+    ) -> Bool {
+        inspect(location: location).items.lazy
+            .flatMap(\.typeIdentifiers)
+            .contains { identifier in
+                UTType(identifier)?.conforms(to: type) == true
+            }
     }
 
     /// Clears a write only when it belongs to this facade and its change count
@@ -231,8 +273,8 @@ public final class ProtectedPasteboard {
         switch location {
         case .system:
             systemStore
-        case .applicationOnly:
-            applicationStore
+        case .appPasteboard:
+            appPasteboardStore
         }
     }
 }
@@ -242,8 +284,8 @@ private extension PasteboardPolicy.Configuration.Destination {
         switch self {
         case .system:
             .system
-        case .applicationOnly:
-            .applicationOnly
+        case .appPasteboard:
+            .appPasteboard
         }
     }
 
@@ -251,7 +293,7 @@ private extension PasteboardPolicy.Configuration.Destination {
         switch self {
         case let .system(universalClipboard):
             universalClipboard == .disabled
-        case .applicationOnly:
+        case .appPasteboard:
             true
         }
     }
