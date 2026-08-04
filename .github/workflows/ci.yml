@@ -13,10 +13,11 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select --switch /Applications/Xcode.app
       - name: Run unit tests
-        run: swift test
+        run: swift test -Xswiftc -warnings-as-errors
       - name: Build UIKit adapter
         run: >-
           xcodebuild -quiet
           -scheme ProtectedPasteboard
           -destination 'generic/platform=iOS Simulator'
+          SWIFT_TREAT_WARNINGS_AS_ERRORS=YES
           build

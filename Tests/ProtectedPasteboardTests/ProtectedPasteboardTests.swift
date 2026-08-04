@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
 struct ProtectedPasteboardTests {
     private let now = Date(timeIntervalSince1970: 1_700_000_000)
 
-    @Test("Sensitive writes disable Handoff and expire")
+    @Test("Sensitive writes disable Universal Clipboard and expire")
     func sensitiveWriteResolvesSecureOptions() throws {
         let system = InMemoryPasteboardStore()
         let application = InMemoryPasteboardStore()
@@ -30,18 +30,18 @@ struct ProtectedPasteboardTests {
         #expect(application.items.isEmpty)
     }
 
-    @Test("Application-only writes never touch the system store")
-    func applicationOnlyRoutesToPrivateStore() throws {
+    @Test("App pasteboard writes never touch the system store")
+    func appPasteboardRoutesToAppStore() throws {
         let system = InMemoryPasteboardStore()
         let application = InMemoryPasteboardStore()
         let pasteboard = makePasteboard(system: system, application: application)
 
-        let receipt = try pasteboard.write("internal value", policy: .applicationOnly)
+        let receipt = try pasteboard.write("internal value", policy: .appPasteboard)
 
         #expect(system.items.isEmpty)
         #expect(application.items == [.text("internal value")])
         #expect(application.lastOptions?.localOnly == true)
-        #expect(receipt.location == .applicationOnly)
+        #expect(receipt.location == .appPasteboard)
     }
 
     @Test("Prohibited values never reach a store")
@@ -51,7 +51,7 @@ struct ProtectedPasteboardTests {
         let pasteboard = makePasteboard(system: system, application: application)
         let policy = PasteboardPolicy.prohibited(reason: "Seed phrases must not enter a pasteboard.")
 
-        #expect(throws: ProtectedPasteboard.Error.writeProhibited(
+        #expect(throws: ProtectedPasteboard.Error.prohibited(
             reason: "Seed phrases must not enter a pasteboard."
         )) {
             try pasteboard.write("abandon abandon abandon", policy: policy)
@@ -66,7 +66,7 @@ struct ProtectedPasteboardTests {
         let pasteboard = makePasteboard(system: system)
         let policy = try PasteboardPolicy(
             destination: .system(universalClipboard: .disabled),
-            expiration: .after(10),
+            expiration: .after(seconds: 10),
             maximumPayloadSize: 3
         )
 
@@ -97,7 +97,6 @@ struct ProtectedPasteboardTests {
 
         #expect(value == "hello")
         #expect(system.selectiveReadCount == 1)
-        #expect(system.fullReadCount == 0)
     }
 
     @Test("Text reads select exact UTF-8 representation deterministically")
@@ -112,6 +111,40 @@ struct ProtectedPasteboardTests {
         let value = try pasteboard.readStringAfterUserAction()
 
         #expect(value == "correct")
+    }
+
+    @Test("Data reads request only the exact representation")
+    func dataReadSelectsExactType() throws {
+        let expected = Data([0xCA, 0xFE])
+        let item = try PasteboardItem(representations: [
+            .init(type: .html, data: Data("<b>ignored</b>".utf8)),
+            .init(type: .png, data: expected),
+        ])
+        let system = InMemoryPasteboardStore(items: [item])
+        let pasteboard = makePasteboard(system: system)
+
+        let value = try pasteboard.readDataAfterUserAction(
+            ofExactType: .png,
+            maximumByteCount: 2
+        )
+
+        #expect(value == expected)
+        #expect(system.selectiveReadCount == 1)
+    }
+
+    @Test("Data reads reject oversized representations")
+    func dataReadEnforcesSizeLimit() {
+        let system = InMemoryPasteboardStore(items: [
+            .data(Data([0xCA, 0xFE]), type: .png),
+        ])
+        let pasteboard = makePasteboard(system: system)
+
+        #expect(throws: ProtectedPasteboard.Error.payloadTooLarge(actual: 2, maximum: 1)) {
+            try pasteboard.readDataAfterUserAction(
+                ofExactType: .png,
+                maximumByteCount: 1
+            )
+        }
     }
 
     @Test("Receipt clearing preserves content copied later")
@@ -149,7 +182,20 @@ struct ProtectedPasteboardTests {
 
         #expect(snapshot.items.count == 1)
         #expect(snapshot.items.first?.types == [.url, .utf8PlainText])
-        #expect(system.fullReadCount == 0)
+        #expect(system.selectiveReadCount == 0)
+    }
+
+    @Test("Content checks inspect metadata without reading payloads")
+    func contentCheckUsesMetadataOnly() throws {
+        let url = try #require(URL(string: "https://example.com"))
+        let system = InMemoryPasteboardStore(items: [.url(url)])
+        let pasteboard = makePasteboard(system: system)
+
+        let containsText = pasteboard.advertisesContent(conformingTo: .text)
+        let containsImage = pasteboard.advertisesContent(conformingTo: .image)
+
+        #expect(containsText)
+        #expect(containsImage == false)
         #expect(system.selectiveReadCount == 0)
     }
 
@@ -172,13 +218,20 @@ struct ProtectedPasteboardTests {
         #expect(throws: PasteboardPolicy.Configuration.ValidationError.nonPositiveExpiration) {
             try PasteboardPolicy(
                 destination: .system(universalClipboard: .disabled),
-                expiration: .after(0)
+                expiration: .after(seconds: 0)
+            )
+        }
+
+        #expect(throws: PasteboardPolicy.Configuration.ValidationError.nonFiniteExpiration) {
+            try PasteboardPolicy(
+                destination: .system(universalClipboard: .disabled),
+                expiration: .at(Date(timeIntervalSinceReferenceDate: .infinity))
             )
         }
 
         #expect(throws: PasteboardPolicy.Configuration.ValidationError.nonPositivePayloadLimit) {
             try PasteboardPolicy(
-                destination: .applicationOnly,
+                destination: .appPasteboard,
                 expiration: .whenReplaced,
                 maximumPayloadSize: -1
             )
@@ -191,7 +244,7 @@ struct ProtectedPasteboardTests {
     ) -> ProtectedPasteboard {
         ProtectedPasteboard(
             systemStore: system,
-            applicationStore: application,
+            appPasteboardStore: application,
             now: { now }
         )
     }
@@ -203,7 +256,6 @@ private final class InMemoryPasteboardStore: PasteboardStore {
     private(set) var items: [PasteboardItem]
     private(set) var lastOptions: PasteboardWriteOptions?
     private(set) var writeCount = 0
-    private(set) var fullReadCount = 0
     private(set) var selectiveReadCount = 0
 
     init(items: [PasteboardItem] = []) {
@@ -230,13 +282,8 @@ private final class InMemoryPasteboardStore: PasteboardStore {
         return changeCount
     }
 
-    func readItems() throws -> [PasteboardItem] {
-        fullReadCount += 1
-        return items
-    }
-
     func readFirstRepresentation(
-        matching type: UTType
+        ofExactType type: UTType
     ) throws -> PasteboardItem.Representation? {
         selectiveReadCount += 1
         return items

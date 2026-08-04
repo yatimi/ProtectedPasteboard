@@ -6,7 +6,7 @@ Understand what ProtectedPasteboard can and cannot protect.
 
 ProtectedPasteboard centralizes pasteboard decisions that are otherwise easy to
 scatter across an application. It can reject prohibited writes, select an
-application-only destination, disable Universal Clipboard, request expiration,
+app-pasteboard destination, disable Universal Clipboard, request expiration,
 limit payload size and types, and avoid overwriting content copied later during
 best-effort cleanup.
 
@@ -18,12 +18,12 @@ Universal Clipboard prevents transfer to nearby devices; it does not make the
 local system pasteboard confidential.
 
 Use Keychain for credentials and cryptographic key material. Seed phrases,
-private keys, PINs, and CVVs should normally use a denied policy.
+private keys, PINs, and CVVs should normally use a prohibited policy.
 
-## Application-only destination
+## App pasteboard destination
 
-The application-only destination uses one unique named pasteboard shared by
-live facades in the process. It is intended for in-app workflows and is not a
+The app pasteboard destination uses one unique named pasteboard shared by the
+production facade. It is intended for in-app workflows and is not a
 cryptographic boundary. Other apps signed by the same team may share named
 pasteboards if they know the name.
 
